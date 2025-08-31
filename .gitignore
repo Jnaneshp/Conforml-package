@@ -65,3 +65,5 @@ ENV/
 # Ignore egg-info in subfolders
 **/conforml.egg-info/
 **/tscp.egg-info/
+
+venv/

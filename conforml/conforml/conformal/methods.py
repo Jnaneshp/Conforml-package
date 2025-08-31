@@ -62,29 +62,43 @@ class CVPlusConformal(ConformalPredictor):
 class AdaptiveConformal(ConformalPredictor):
     """Adaptive conformal prediction for non-stationary time series.
 
-    Implements the adaptive conformal framework from Gibbs & Candès (2021).
+    Supports exponential decay ("decay") and sliding window ("sliding") calibration.
     """
-
-    def __init__(self, model: TimeSeriesModel, alpha: float = 0.1, 
-                 threshold: float = 0.05):
+    def __init__(self, model: TimeSeriesModel, alpha: float = 0.1, threshold: float = 0.05, method: str = "decay", window_size: int = 50):
         super().__init__(model, alpha)
         self.threshold = threshold
+        self.method = method
+        self.window_size = window_size
         self.weights = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> 'AdaptiveConformal':
         self.model.fit(X, y)
         preds = self.model.predict(X)
         residuals = np.abs(y - preds)
-        
-        # Calculate exponentially decaying weights
-        t = len(residuals)
-        decay = (1 - self.threshold) ** np.arange(t)
-        self.weights = decay[::-1] / decay.sum()  # Reverse for time-ordered weighting
-        
-        sorted_residuals = np.sort(residuals)
-        cum_weights = np.cumsum(self.weights)
-        effective_quantile = 1 - self.alpha * cum_weights[-1]
-        idx = np.searchsorted(cum_weights, effective_quantile)
-        self.quantile = sorted_residuals[min(idx, len(sorted_residuals)-1)]
+        if self.method == "decay":
+            t = len(residuals)
+            decay = (1 - self.threshold) ** np.arange(t)
+            self.weights = decay[::-1] / decay.sum()
+            sorted_residuals = np.sort(residuals)
+            cum_weights = np.cumsum(self.weights)
+            effective_quantile = 1 - self.alpha * cum_weights[-1]
+            idx = np.searchsorted(cum_weights, effective_quantile)
+            self.quantile = sorted_residuals[min(idx, len(sorted_residuals)-1)]
+        elif self.method == "sliding":
+            if len(residuals) < self.window_size:
+                window_residuals = residuals
+            else:
+                window_residuals = residuals[-self.window_size:]
+            self.quantile = np.quantile(window_residuals, 1 - self.alpha)
+        else:
+            raise ValueError(f"Unknown method: {self.method}. Use 'decay' or 'sliding'.")
         self.is_fitted = True
         return self
+
+    def predict(self, X: np.ndarray):
+        if not self.is_fitted:
+            raise RuntimeError("AdaptiveConformal must be fitted before prediction.")
+        preds = self.model.predict(X)
+        lower = preds - self.quantile
+        upper = preds + self.quantile
+        return preds, lower, upper
