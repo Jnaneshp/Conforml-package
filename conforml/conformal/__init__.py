@@ -5,6 +5,6 @@ for time series forecasting.
 """
 
 from .base import ConformalPredictor
-from .methods import CVPlusConformal, AdaptiveConformal
+from .methods import CVPlusConformal, AdaptiveConformal, IntervalSharpnessConformal
 
-__all__ = ['ConformalPredictor', 'CVPlusConformal', 'AdaptiveConformal']
+__all__ = ['ConformalPredictor', 'CVPlusConformal', 'AdaptiveConformal', 'IntervalSharpnessConformal']

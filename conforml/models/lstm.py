@@ -1,40 +1,71 @@
 import numpy as np
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Input, LSTM, Dense
-from .base import TimeSeriesModel
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 
-class LSTMModel(TimeSeriesModel):
-    def __init__(self, input_shape=(1,1), units=50, epochs=10, batch_size=32):
-        super().__init__()
-        self.input_shape = input_shape
-        self.units = units
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2):
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = self.fc(out[:, -1, :])  # use last time step
+        return out
+
+
+class LSTMForecaster:
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, output_size=1, dropout=0.2, lr=0.001, epochs=50, batch_size=32, device=None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = LSTMModel(input_size, hidden_size, num_layers, output_size, dropout).to(self.device)
         self.epochs = epochs
         self.batch_size = batch_size
-        self.model = None
-        self.is_fitted = False
+        self.lr = lr
+        self.criterion = nn.MSELoss()
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
-    def fit(self, X: np.ndarray, y: np.ndarray = None):
-        # Reshape X for LSTM: (samples, timesteps, features)
-        X = X.reshape((X.shape[0], self.input_shape[0], self.input_shape[1]))
-        self.model = Sequential()
-        self.model.add(Input(shape=self.input_shape))
-        self.model.add(LSTM(self.units))
-        self.model.add(Dense(1))
-        self.model.compile(optimizer='adam', loss='mse')
-        self.model.fit(X, y, epochs=self.epochs, batch_size=self.batch_size, verbose=0)
-        self.is_fitted = True
-        return self
+    def _create_sequences(self, data, seq_length):
+        xs, ys = [], []
+        for i in range(len(data) - seq_length):
+            x = data[i:(i + seq_length)]
+            y = data[i + seq_length]
+            xs.append(x)
+            ys.append(y)
+        return np.array(xs), np.array(ys)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        self.check_is_fitted()
-        X = X.reshape((X.shape[0], self.input_shape[0], self.input_shape[1]))
-        preds = self.model.predict(X, verbose=0)
-        return preds.flatten()
+    def fit(self, series, seq_length=10):
+        series = np.array(series, dtype=np.float32).reshape(-1, 1)
+        X, y = self._create_sequences(series, seq_length)
+        X_tensor = torch.tensor(X, dtype=torch.float32).to(self.device)
+        y_tensor = torch.tensor(y, dtype=torch.float32).to(self.device)
 
-    def predict_interval(self, X: np.ndarray, confidence: float = 0.95):
-        preds = self.predict(X)
-        # Dummy intervals: mean +/- std
-        std = np.std(preds)
-        lower = preds - std
-        upper = preds + std
-        return preds, lower, upper
+        dataset = TensorDataset(X_tensor, y_tensor)
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+
+        self.model.train()
+        for epoch in range(self.epochs):
+            total_loss = 0
+            for xb, yb in loader:
+                xb = xb.unsqueeze(-1)  # add feature dim
+                self.optimizer.zero_grad()
+                preds = self.model(xb)
+                loss = self.criterion(preds, yb)
+                loss.backward()
+                self.optimizer.step()
+                total_loss += loss.item()
+            if (epoch + 1) % 10 == 0:
+                print(f"Epoch [{epoch+1}/{self.epochs}], Loss: {total_loss/len(loader):.6f}")
+
+    def predict(self, series, seq_length=10, steps=1):
+        self.model.eval()
+        series = np.array(series, dtype=np.float32).reshape(-1, 1).tolist()
+        predictions = []
+        for _ in range(steps):
+            seq = torch.tensor(series[-seq_length:], dtype=torch.float32).unsqueeze(0).unsqueeze(-1).to(self.device)
+            with torch.no_grad():
+                pred = self.model(seq).cpu().numpy().flatten()[0]
+            predictions.append(pred)
+            series.append([pred])
+        return np.array(predictions)

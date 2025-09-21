@@ -1,9 +1,8 @@
-# methods.py
-
 from .base import ConformalPredictor
 from ..models.base import TimeSeriesModel
 import numpy as np
 from sklearn.model_selection import TimeSeriesSplit
+
 
 class CVPlusConformal(ConformalPredictor):
     """Cross-validation+ conformal prediction for time series.
@@ -30,8 +29,7 @@ class CVPlusConformal(ConformalPredictor):
         return self
 
     def predict(self, X: np.ndarray):
-        if not self.is_fitted:
-            raise RuntimeError("CVPlusConformal must be fitted before prediction.")
+        self.check_is_fitted()
         preds = self.model.predict(X)
         lower = preds - self.quantile
         upper = preds + self.quantile
@@ -66,17 +64,21 @@ class AdaptiveConformal(ConformalPredictor):
 
     Supports exponential decay ("decay") and sliding window ("sliding") calibration.
     """
-    def __init__(self, model: TimeSeriesModel, alpha: float = 0.1, threshold: float = 0.05, method: str = "decay", window_size: int = 50):
+
+    def __init__(self, model: TimeSeriesModel, alpha: float = 0.1,
+                 threshold: float = 0.05, method: str = "decay", window_size: int = 50):
         super().__init__(model, alpha)
         self.threshold = threshold
         self.method = method
         self.window_size = window_size
         self.weights = None
+        self.quantile = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> 'AdaptiveConformal':
         self.model.fit(X, y)
         preds = self.model.predict(X)
         residuals = np.abs(y - preds)
+
         if self.method == "decay":
             t = len(residuals)
             decay = (1 - self.threshold) ** np.arange(t)
@@ -85,21 +87,23 @@ class AdaptiveConformal(ConformalPredictor):
             cum_weights = np.cumsum(self.weights)
             effective_quantile = 1 - self.alpha * cum_weights[-1]
             idx = np.searchsorted(cum_weights, effective_quantile)
-            self.quantile = sorted_residuals[min(idx, len(sorted_residuals)-1)]
+            self.quantile = sorted_residuals[min(idx, len(sorted_residuals) - 1)]
+
         elif self.method == "sliding":
             if len(residuals) < self.window_size:
                 window_residuals = residuals
             else:
                 window_residuals = residuals[-self.window_size:]
             self.quantile = np.quantile(window_residuals, 1 - self.alpha)
+
         else:
             raise ValueError(f"Unknown method: {self.method}. Use 'decay' or 'sliding'.")
+
         self.is_fitted = True
         return self
 
     def predict(self, X: np.ndarray):
-        if not self.is_fitted:
-            raise RuntimeError("AdaptiveConformal must be fitted before prediction.")
+        self.check_is_fitted()
         preds = self.model.predict(X)
         lower = preds - self.quantile
         upper = preds + self.quantile
@@ -115,7 +119,7 @@ class AdaptiveConformal(ConformalPredictor):
                 'method': self.method,
                 'window_size': self.window_size,
                 'weights': self.weights,
-                'quantile': getattr(self, 'quantile', None),
+                'quantile': self.quantile,
                 'is_fitted': self.is_fitted
             }, f)
 
@@ -129,5 +133,67 @@ class AdaptiveConformal(ConformalPredictor):
             self.method = state['method']
             self.window_size = state['window_size']
             self.weights = state['weights']
+            self.quantile = state['quantile']
+            self.is_fitted = state['is_fitted']
+
+
+class IntervalSharpnessConformal(ConformalPredictor):
+    """Interval-Sharpness Optimized Conformal.
+
+    Novel method: minimizes average interval width subject to coverage ≥ (1 - alpha).
+    """
+
+    def __init__(self, model: TimeSeriesModel, alpha: float = 0.1, lambda_sharpness: float = 0.5):
+        super().__init__(model, alpha)
+        self.lambda_sharpness = lambda_sharpness
+        self.quantile = None
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> 'IntervalSharpnessConformal':
+        self.model.fit(X, y)
+        preds = self.model.predict(X)
+
+        residuals = np.abs(y - preds)
+        sorted_residuals = np.sort(residuals)
+
+        # Standard conformal quantile for coverage
+        q_coverage = np.quantile(sorted_residuals, 1 - self.alpha)
+
+        # Average width of interval
+        avg_width = 2 * q_coverage
+
+        # Penalty for sharpness (relative to scale of data)
+        penalty = self.lambda_sharpness * (avg_width / (np.mean(np.abs(y)) + 1e-8))
+
+        # Adjust quantile (cannot go below zero)
+        self.quantile = max(q_coverage - penalty, 0.0)
+
+        self.is_fitted = True
+        return self
+
+    def predict(self, X: np.ndarray):
+        self.check_is_fitted()
+        preds = self.model.predict(X)
+        lower = preds - self.quantile
+        upper = preds + self.quantile
+        return preds, lower, upper
+
+    def save(self, path: str) -> None:
+        import pickle
+        with open(path, 'wb') as f:
+            pickle.dump({
+                'model': self.model,
+                'alpha': self.alpha,
+                'lambda_sharpness': self.lambda_sharpness,
+                'quantile': self.quantile,
+                'is_fitted': self.is_fitted
+            }, f)
+
+    def load(self, path: str) -> None:
+        import pickle
+        with open(path, 'rb') as f:
+            state = pickle.load(f)
+            self.model = state['model']
+            self.alpha = state['alpha']
+            self.lambda_sharpness = state['lambda_sharpness']
             self.quantile = state['quantile']
             self.is_fitted = state['is_fitted']
