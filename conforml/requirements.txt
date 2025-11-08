@@ -8,3 +8,4 @@ streamlit>=1.24.0
 tensorflow>=2.8.0
 keras>=2.8.0
 xgboost>=1.6.0
+plotly==5.24.1
