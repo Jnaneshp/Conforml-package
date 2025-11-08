@@ -7,3 +7,4 @@ prophet>=1.1.0
 streamlit>=1.24.0
 tensorflow>=2.8.0
 keras>=2.8.0
+xgboost>=1.6.0

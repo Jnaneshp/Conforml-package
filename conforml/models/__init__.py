@@ -1,10 +1,11 @@
 from .arima import ARIMAModel
-
 from .sarima import SARIMAModel
-from .lstm import LSTMForecaster
+from .prophet import ProphetModel
+from .xgboost_model import XGBoostTimeSeriesModel
 
 __all__ = [
     "ARIMAModel",
     "SARIMAModel",
-    "LSTMForecaster",
+    "ProphetModel",
+    "XGBoostTimeSeriesModel",
 ]
