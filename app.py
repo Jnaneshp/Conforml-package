@@ -6,6 +6,7 @@ import time
 import io
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio  # for static image export (needs kaleido installed)
 
 warnings.filterwarnings("ignore")
 
@@ -213,12 +214,10 @@ def run_forecast(df, model_type, test_steps):
         lower_bounds.append(lower[0] if hasattr(lower, "__getitem__") else lower)
         upper_bounds.append(upper[0] if hasattr(upper, "__getitem__") else upper)
 
-        # ✅ retrain adaptively on updated history
         history.append(y_test[t])
-        if model_type != "Prophet":  # Prophet retrains slower, skip for speed
+        if model_type != "Prophet":
             model.fit(np.arange(len(history)).reshape(-1, 1), np.array(history))
 
-    # ---- Metrics ----
     rmse_calc = RMSECalculator()
     mape_calc = MAPECalculator()
     rmse_calc.update(y_test, np.array(predictions))
@@ -238,22 +237,25 @@ def run_forecast(df, model_type, test_steps):
 # Plot Results (accept title override)
 # -------------------------------
 def plot_results(results, title_override=None):
-    fig = make_subplots(rows=2, cols=1,
-                        subplot_titles=('Test Forecast with Conformal Intervals', 'Prediction Errors'),
-                        vertical_spacing=0.12, row_heights=[0.65, 0.35])
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('Test Forecast with Conformal Intervals', 'Prediction Errors'),
+        vertical_spacing=0.12, row_heights=[0.65, 0.35]
+    )
 
     test_dates = results['test']['timestamp'].values
 
     fig.add_trace(go.Scatter(x=test_dates, y=results['y_test'], mode='lines+markers',
-                             name='Actual', line=dict(color='black', width=2)), row=1, col=1)
+                             name='Actual', line=dict(color='black', width=2),
+                             marker=dict(size=6)), row=1, col=1)
     fig.add_trace(go.Scatter(x=test_dates, y=results['predictions'], mode='lines+markers',
-                             name='Predicted', line=dict(color='orange', width=2)), row=1, col=1)
-    # draw upper then lower and fill between them
+                             name='Predicted', line=dict(color='orange', width=2),
+                             marker=dict(size=6)), row=1, col=1)
     fig.add_trace(go.Scatter(x=test_dates, y=results['upper_bounds'], mode='lines',
                              line=dict(width=0), showlegend=False), row=1, col=1)
     fig.add_trace(go.Scatter(x=test_dates, y=results['lower_bounds'], mode='lines',
                              name=f'{confidence_level:.0f}% Interval', line=dict(width=0),
-                             fill='tonexty', fillcolor='rgba(255,0,0,0.25)'), row=1, col=1)
+                             fill='tonexty', fillcolor='rgba(255,0,0,0.20)'), row=1, col=1)
 
     residuals = results['y_test'] - results['predictions']
     fig.add_trace(go.Scatter(x=test_dates, y=residuals, mode='markers',
@@ -261,12 +263,19 @@ def plot_results(results, title_override=None):
     fig.add_hline(y=0, line_dash="dash", line_color="gray", row=2, col=1)
 
     title_text = title_override if title_override is not None else f"{model_type} with {conformal_method}"
-    fig.update_layout(height=700, title_text=title_text, title_x=0.5)
-    fig.update_xaxes(tickangle=-45)
+    fig.update_layout(
+        height=750,
+        title_text=title_text,
+        title_x=0.5,
+        template="plotly_white",
+        margin=dict(l=70, r=40, t=80, b=60)
+    )
+    fig.update_xaxes(tickangle=-25)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.1)")
     return fig
 
 # -------------------------------
-# New: Conformal Metrics Plot (accept title_override)
+# Conformal Metrics Plot (combined, improved)
 # -------------------------------
 def plot_conformal_metrics(results, title_override=None):
     test_dates = results['test']['timestamp'].values
@@ -286,77 +295,203 @@ def plot_conformal_metrics(results, title_override=None):
             "Interval Width Over Time",
             "Absolute Error Over Time"
         ),
-        vertical_spacing=0.12,
-        row_heights=[0.25, 0.35, 0.35]
+        vertical_spacing=0.10,
+        row_heights=[0.30, 0.35, 0.35]
     )
 
-    # 1) Coverage indicator: actual points colored by inside/outside
+    color_actual_in = "#2ca02c"
+    color_actual_out = "#d62728"
+    color_pred = "#1f77b4"
+    color_width = "#ff7f0e"
+    color_abs = "#9467bd"
+
+    # Coverage – split inside/outside for clearer legend
     fig.add_trace(
         go.Scatter(
-            x=test_dates,
-            y=actual,
+            x=test_dates[in_interval],
+            y=actual[in_interval],
             mode="markers+lines",
-            marker=dict(
-                color=np.where(in_interval, "green", "red"),
-                size=8,
-                line=dict(width=0)
-            ),
-            name="Actual (green=inside, red=outside)"
+            line=dict(color=color_actual_in, width=1.8),
+            marker=dict(color=color_actual_in, size=7),
+            name="Actual (inside interval)"
         ),
         row=1, col=1
     )
-    # also show predicted as a faint line for reference
+    fig.add_trace(
+        go.Scatter(
+            x=test_dates[~in_interval],
+            y=actual[~in_interval],
+            mode="markers",
+            marker=dict(color=color_actual_out, size=8, symbol="x"),
+            name="Actual (outside interval)"
+        ),
+        row=1, col=1
+    )
     fig.add_trace(
         go.Scatter(
             x=test_dates,
             y=pred,
             mode="lines",
-            name="Predicted (ref)",
-            line=dict(dash="dash"),
-            showlegend=False
+            name="Predicted",
+            line=dict(color=color_pred, dash="dash", width=1.8)
         ),
         row=1, col=1
     )
 
-    # 2) Interval width trend
+    # Interval width
     fig.add_trace(
         go.Scatter(
             x=test_dates,
             y=interval_width,
-            mode="lines+markers",
-            name="Interval Width"
+            mode="lines",
+            name="Interval Width",
+            line=dict(color=color_width, width=2.0)
         ),
         row=2, col=1
     )
 
-    # 3) Absolute error trend
+    # Absolute error
     fig.add_trace(
         go.Scatter(
             x=test_dates,
             y=abs_error,
-            mode="lines+markers",
-            name="Absolute Error"
+            mode="lines",
+            name="Absolute Error",
+            line=dict(color=color_abs, width=2.0)
         ),
         row=3, col=1
     )
 
-    # layout tweaks
     title_text = title_override if title_override is not None else "Conformal Metrics Overview"
-    fig.update_xaxes(tickangle=-45)
-    fig.update_layout(height=800, title=title_text, title_x=0.5)
+    fig.update_layout(
+        title=title_text,
+        title_x=0.5,
+        height=900,
+        template="plotly_white",
+        margin=dict(l=70, r=40, t=90, b=60),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    )
+    fig.update_xaxes(tickangle=-25)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.1)")
     return fig
 
 # -------------------------------
-# New: Run multiple models and collect leaderboard (cached)
+# Separate conformal metric figures (improved)
+# -------------------------------
+def plot_conformal_metrics_separate(results, title_prefix=None):
+    test_dates = results['test']['timestamp'].values
+    actual = np.array(results['y_test'])
+    pred = np.array(results['predictions'])
+    lower = np.array(results['lower_bounds'])
+    upper = np.array(results['upper_bounds'])
+
+    in_interval = (actual >= lower) & (actual <= upper)
+    interval_width = upper - lower
+    abs_error = np.abs(actual - pred)
+
+    prefix = title_prefix or ""
+
+    color_actual_in = "#2ca02c"
+    color_actual_out = "#d62728"
+    color_pred = "#1f77b4"
+    color_width = "#ff7f0e"
+    color_abs = "#9467bd"
+
+    # Coverage
+    fig_coverage = go.Figure()
+    fig_coverage.add_trace(
+        go.Scatter(
+            x=test_dates[in_interval],
+            y=actual[in_interval],
+            mode="markers+lines",
+            line=dict(color=color_actual_in, width=2),
+            marker=dict(color=color_actual_in, size=7),
+            name="Actual (inside interval)"
+        )
+    )
+    fig_coverage.add_trace(
+        go.Scatter(
+            x=test_dates[~in_interval],
+            y=actual[~in_interval],
+            mode="markers",
+            marker=dict(color=color_actual_out, size=8, symbol="x"),
+            name="Actual (outside interval)"
+        )
+    )
+    fig_coverage.add_trace(
+        go.Scatter(
+            x=test_dates,
+            y=pred,
+            mode="lines",
+            name="Predicted",
+            line=dict(color=color_pred, dash="dash", width=2)
+        )
+    )
+    fig_coverage.update_layout(
+        title=f"{prefix}Coverage Indicator (Target {confidence_level:.0f}%)",
+        xaxis_title="Time",
+        yaxis_title="Value",
+        height=500,
+        width=900,
+        margin=dict(l=70, r=40, t=80, b=70),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+        template="plotly_white"
+    )
+    fig_coverage.update_xaxes(tickangle=-25)
+
+    # Interval width
+    fig_width = go.Figure()
+    fig_width.add_trace(
+        go.Scatter(
+            x=test_dates,
+            y=interval_width,
+            mode="lines+markers",
+            line=dict(color=color_width, width=2),
+            marker=dict(size=6),
+            name="Interval Width"
+        )
+    )
+    fig_width.update_layout(
+        title=f"{prefix}Interval Width Over Time",
+        xaxis_title="Time",
+        yaxis_title="Width",
+        height=500,
+        width=900,
+        margin=dict(l=70, r=40, t=80, b=70),
+        template="plotly_white"
+    )
+    fig_width.update_xaxes(tickangle=-25)
+
+    # Absolute error
+    fig_abs = go.Figure()
+    fig_abs.add_trace(
+        go.Scatter(
+            x=test_dates,
+            y=abs_error,
+            mode="lines+markers",
+            line=dict(color=color_abs, width=2),
+            marker=dict(size=6),
+            name="Absolute Error"
+        )
+    )
+    fig_abs.update_layout(
+        title=f"{prefix}Absolute Error Over Time",
+        xaxis_title="Time",
+        yaxis_title="Absolute Error",
+        height=500,
+        width=900,
+        margin=dict(l=70, r=40, t=80, b=70),
+        template="plotly_white"
+    )
+    fig_abs.update_xaxes(tickangle=-25)
+
+    return fig_coverage, fig_width, fig_abs
+
+# -------------------------------
+# Run multiple models and collect leaderboard (cached)
 # -------------------------------
 @st.cache_data(show_spinner=False)
 def run_models_compare_cached(df_serialized, models_list, test_steps, config):
-    """
-    df_serialized: bytes from df.to_csv().encode
-    models_list: list of model names to run
-    config: dict with needed config like alpha, conformal_method, arima/sarima params etc.
-    """
-    # recreate df
     df = pd.read_csv(io.BytesIO(df_serialized), parse_dates=['timestamp'])
     results_by_model = {}
     leaderboard_rows = []
@@ -364,9 +499,7 @@ def run_models_compare_cached(df_serialized, models_list, test_steps, config):
     for m in models_list:
         start = time.time()
         try:
-            # set the global-like variables by reading from config
             globals().update(config.get('globals', {}))
-            # run forecast for this model name
             res = run_forecast(df, m, test_steps)
             end = time.time()
             runtime = end - start
@@ -380,12 +513,11 @@ def run_models_compare_cached(df_serialized, models_list, test_steps, config):
                 'rmse': float(res['rmse']),
                 'mape': float(res['mape']),
                 'empirical_coverage': empirical_coverage,
-                'avg_interval_width': avg_interval_width, 
+                'avg_interval_width': avg_interval_width,
                 'runtime_sec': runtime
             })
             results_by_model[m] = res
         except Exception as e:
-            # if a model fails, keep an error row
             leaderboard_rows.append({
                 'model': m,
                 'rmse': np.nan,
@@ -397,7 +529,6 @@ def run_models_compare_cached(df_serialized, models_list, test_steps, config):
             })
             results_by_model[m] = {'error': str(e)}
     leaderboard_df = pd.DataFrame(leaderboard_rows)
-    # sort by rmse ascending (primary)
     leaderboard_df = leaderboard_df.sort_values(by=['rmse'], na_position='last').reset_index(drop=True)
     return leaderboard_df, results_by_model
 
@@ -416,8 +547,7 @@ if df is not None:
     st.subheader("📊 Data Preview")
     st.dataframe(df.head(), use_container_width=True)
 
-    # --- Single-run forecast (existing behavior) ---
-    # create two columns but only use left for the button (don't render results inside the column)
+    # --- Single-run forecast ---
     col_left, col_right = st.columns([1, 1])
     button_pressed = col_left.button("🚀 Run Forecast (single model)")
 
@@ -429,7 +559,6 @@ if df is not None:
                 st.error(f"❌ Error during forecasting: {e}")
                 results = None
 
-        # Render results in the main flow (not inside the column) so they use full width
         if results:
             st.success("✅ Forecasting completed successfully!")
 
@@ -440,7 +569,19 @@ if df is not None:
                 st.metric("MAPE", f"{results['mape']:.2f}%")
 
             st.subheader("📈 Forecast Results (Test Set Only)")
-            st.plotly_chart(plot_results(results), use_container_width=True)
+            single_forecast_fig = plot_results(results)
+            st.plotly_chart(single_forecast_fig, use_container_width=True)
+
+            try:
+                img_bytes = single_forecast_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    label="💾 Download Forecast Plot (PNG)",
+                    data=img_bytes,
+                    file_name=f"{model_type}_{conformal_method}_forecast.png",
+                    mime="image/png"
+                )
+            except Exception as e:
+                st.warning(f"Image export not available: {e}")
 
             in_interval = ((results['y_test'] >= results['lower_bounds']) &
                            (results['y_test'] <= results['upper_bounds']))
@@ -457,7 +598,53 @@ if df is not None:
                 st.metric("Avg Interval Width", f"{avg_interval_width:.2f}")
 
             st.subheader("📉 Conformal Metrics Graphs")
-            st.plotly_chart(plot_conformal_metrics(results), use_container_width=True)
+            single_conformal_fig = plot_conformal_metrics(results)
+            st.plotly_chart(single_conformal_fig, use_container_width=True)
+
+            st.markdown("#### 📥 Download Conformal Metrics (Separate)")
+            cov_fig, width_fig, abs_fig = plot_conformal_metrics_separate(
+                results,
+                title_prefix=f"{model_type} ({conformal_method}) — "
+            )
+
+            # Coverage
+            st.plotly_chart(cov_fig, use_container_width=True)
+            try:
+                cov_bytes = cov_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    label="💾 Download Coverage Plot (PNG)",
+                    data=cov_bytes,
+                    file_name=f"{model_type}_{conformal_method}_coverage.png",
+                    mime="image/png"
+                )
+            except Exception as e:
+                st.warning(f"Coverage image export not available: {e}")
+
+            # Interval width
+            st.plotly_chart(width_fig, use_container_width=True)
+            try:
+                width_bytes = width_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    label="💾 Download Interval Width Plot (PNG)",
+                    data=width_bytes,
+                    file_name=f"{model_type}_{conformal_method}_interval_width.png",
+                    mime="image/png"
+                )
+            except Exception as e:
+                st.warning(f"Interval width image export not available: {e}")
+
+            # Absolute error
+            st.plotly_chart(abs_fig, use_container_width=True)
+            try:
+                abs_bytes = abs_fig.to_image(format="png", scale=2)
+                st.download_button(
+                    label="💾 Download Absolute Error Plot (PNG)",
+                    data=abs_bytes,
+                    file_name=f"{model_type}_{conformal_method}_absolute_error.png",
+                    mime="image/png"
+                )
+            except Exception as e:
+                st.warning(f"Absolute error image export not available: {e}")
 
     # --- Model Compare UI ---
     st.markdown("---")
@@ -467,11 +654,8 @@ if df is not None:
         st.info("Select at least one model in the sidebar under 'Model Compare' to enable leaderboard.")
     else:
         st.write(f"Selected models: **{', '.join(models_to_compare)}**")
-        # Prepare config to pass into cached runner (we need to pass any variables used by create_model)
-        # We'll pack relevant globals into config, so the cached function can set them.
-        config_globals = {}
-        # collect possible globals from current sidebar values
-        config_globals.update({
+
+        config_globals = {
             'arima_p': arima_p if 'arima_p' in globals() else 1,
             'arima_d': arima_d if 'arima_d' in globals() else 1,
             'arima_q': arima_q if 'arima_q' in globals() else 1,
@@ -486,7 +670,6 @@ if df is not None:
             'weekly': weekly if 'weekly' in globals() else True,
             'daily': daily if 'daily' in globals() else False,
             'seasonality_mode': seasonality_mode if 'seasonality_mode' in globals() else 'additive',
-            # conformal config values (but create_conformal_predictor reads these from outer scope as well)
             'conformal_method': conformal_method,
             'alpha': alpha,
             'cv_folds': cv_folds if 'cv_folds' in globals() else 5,
@@ -494,9 +677,8 @@ if df is not None:
             'adaptive_method': adaptive_method if 'adaptive_method' in globals() else 'decay',
             'window_size': window_size if 'window_size' in globals() else 50,
             'sharpness_weight': sharpness_weight if 'sharpness_weight' in globals() else 0.5
-        })
+        }
 
-        # serialize df for cacheable function
         df_serialized = df.to_csv(index=False).encode()
 
         if run_compare:
@@ -507,19 +689,22 @@ if df is not None:
                 )
             st.success("✅ Model compare finished.")
 
-            # Leaderboard table
             st.subheader("🏆 Leaderboard (sorted by RMSE)")
             st.dataframe(leaderboard_df, use_container_width=True)
 
-            # Simple bar chart of RMSE
             fig_bar = go.Figure()
             fig_bar.add_trace(go.Bar(x=leaderboard_df['model'].astype(str),
-                                      y=leaderboard_df['rmse'],
-                                      name='RMSE'))
-            fig_bar.update_layout(title="RMSE by Model", xaxis_title="Model", yaxis_title="RMSE", height=350)
+                                     y=leaderboard_df['rmse'],
+                                     name='RMSE'))
+            fig_bar.update_layout(
+                title="RMSE by Model",
+                xaxis_title="Model",
+                yaxis_title="RMSE",
+                height=350,
+                template="plotly_white"
+            )
             st.plotly_chart(fig_bar, use_container_width=True)
 
-            # Model selector for detailed inspection
             st.subheader("🔎 Inspect model results")
             model_choice = st.selectbox("Choose model to inspect", leaderboard_df['model'].astype(str).tolist())
 
@@ -529,7 +714,6 @@ if df is not None:
             elif 'error' in chosen_res:
                 st.error(f"Model error: {chosen_res['error']}")
             else:
-                # show metrics
                 st.write("**Summary metrics**")
                 in_interval = ((chosen_res['y_test'] >= chosen_res['lower_bounds']) &
                                (chosen_res['y_test'] <= chosen_res['upper_bounds']))
@@ -544,21 +728,87 @@ if df is not None:
                     st.metric("Empirical Coverage", f"{empirical_coverage:.1f}%")
 
                 st.markdown("**Forecast plot**")
-                st.plotly_chart(plot_results(chosen_res, title_override=f"{model_choice} with {conformal_method}"), use_container_width=True)
+                inspect_fig = plot_results(chosen_res, title_override=f"{model_choice} with {conformal_method}")
+                st.plotly_chart(inspect_fig, use_container_width=True)
 
-                st.markdown("**Conformal metrics**")
-                st.plotly_chart(plot_conformal_metrics(chosen_res, title_override=f"{model_choice} — Conformal Metrics"), use_container_width=True)
+                try:
+                    inspect_img = inspect_fig.to_image(format="png", scale=2)
+                    st.download_button(
+                        label=f"💾 Download {model_choice} Forecast Plot (PNG)",
+                        data=inspect_img,
+                        file_name=f"{model_choice}_{conformal_method}_forecast.png",
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.warning(f"Image export not available for {model_choice}: {e}")
 
-                # allow download of predictions CSV
+                st.markdown("**Conformal metrics (combined)**")
+                inspect_conformal_fig = plot_conformal_metrics(
+                    chosen_res,
+                    title_override=f"{model_choice} — Conformal Metrics"
+                )
+                st.plotly_chart(inspect_conformal_fig, use_container_width=True)
+
+                st.markdown("**Conformal metrics (separate for report)**")
+                cov_fig_i, width_fig_i, abs_fig_i = plot_conformal_metrics_separate(
+                    chosen_res,
+                    title_prefix=f"{model_choice} ({conformal_method}) — "
+                )
+
+                # Coverage
+                st.plotly_chart(cov_fig_i, use_container_width=True)
+                try:
+                    cov_i_bytes = cov_fig_i.to_image(format="png", scale=2)
+                    st.download_button(
+                        label=f"💾 Download {model_choice} Coverage Plot (PNG)",
+                        data=cov_i_bytes,
+                        file_name=f"{model_choice}_{conformal_method}_coverage.png",
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.warning(f"Coverage image export not available for {model_choice}: {e}")
+
+                # Interval width
+                st.plotly_chart(width_fig_i, use_container_width=True)
+                try:
+                    width_i_bytes = width_fig_i.to_image(format="png", scale=2)
+                    st.download_button(
+                        label=f"💾 Download {model_choice} Interval Width Plot (PNG)",
+                        data=width_i_bytes,
+                        file_name=f"{model_choice}_{conformal_method}_interval_width.png",
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.warning(f"Interval width image export not available for {model_choice}: {e}")
+
+                # Absolute error
+                st.plotly_chart(abs_fig_i, use_container_width=True)
+                try:
+                    abs_i_bytes = abs_fig_i.to_image(format="png", scale=2)
+                    st.download_button(
+                        label=f"💾 Download {model_choice} Absolute Error Plot (PNG)",
+                        data=abs_i_bytes,
+                        file_name=f"{model_choice}_{conformal_method}_absolute_error.png",
+                        mime="image/png"
+                    )
+                except Exception as e:
+                    st.warning(f"Absolute error image export not available for {model_choice}: {e}")
+
                 preds_df = chosen_res['test'].copy().reset_index(drop=True)
                 preds_df['pred'] = chosen_res['predictions']
                 preds_df['lower'] = chosen_res['lower_bounds']
                 preds_df['upper'] = chosen_res['upper_bounds']
                 csv_buf = preds_df.to_csv(index=False).encode()
-                st.download_button(label="Download predictions CSV", data=csv_buf, file_name=f"{model_choice}_predictions.csv", mime="text/csv")
+                st.download_button(
+                    label="Download predictions CSV",
+                    data=csv_buf,
+                    file_name=f"{model_choice}_predictions.csv",
+                    mime="text/csv"
+                )
 
         else:
             st.info("Click **Run Compare** in the sidebar to execute the selected models and produce the leaderboard.")
+
 # Footer
 st.markdown("---")
 st.markdown("<div style='text-align: center; color: #666;'>Built with  ConformL Package</div>", unsafe_allow_html=True)
