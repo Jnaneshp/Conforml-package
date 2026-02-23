@@ -31,7 +31,7 @@ ConformL is an easy-to-use forecasting tool that helps you predict future values
 
 2. **Clone or download this repository**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/Jnaneshp/Conforml-package.git
    cd build
    ```
 
